@@ -153,7 +153,7 @@ const char* const BUILTIN_BLOCKLIST[] = {
   "sovrn.com",
   "lijit.com",
 
-  // --- Mobile & In-Game Ad SDKs ---
+  // --- Mobile & In-Game Ad SDKs (Reel Apps & In-App Ads) ---
   "unityads.unity3d.com",
   "applovin.com",
   "vungle.com",
@@ -163,6 +163,11 @@ const char* const BUILTIN_BLOCKLIST[] = {
   "flurry.com",
   "inmobi.com",
   "mintegral.com",
+  "pangle.io",
+  "pangolin-sdk.com",
+  "tapjoy.com",
+  "ogury.com",
+  "appodeal.com",
   "supersonicads.com",
   "smaato.net",
   "fyber.com",
@@ -183,7 +188,7 @@ const char* const BUILTIN_BLOCKLIST[] = {
   "onetrust.com",
   "didomi.io",
 
-  // --- Invisible Trackers, Beacons, & Fingerprinters ---
+  // --- Invisible Trackers, Social Telemetry & Fingerprinters ---
   "hotjar.com",
   "mouseflow.com",
   "crazyegg.com",
@@ -206,11 +211,23 @@ const char* const BUILTIN_BLOCKLIST[] = {
   "pixel.facebook.com",
   "an.facebook.com",
   "analytics.facebook.com",
+  "b-graph.facebook.com",
+  "connect.facebook.net",
+  "alb.reddit.com",
+  "events.reddit.com",
+  "events.redditmedia.com",
+  "out.reddit.com",
+  "ads.tiktok.com",
+  "analytics.tiktok.com",
+  "mcs-sg.tiktokv.com",
+  "mon-sg.tiktokv.com",
+  "mon.tiktokv.com",
+  "mssdk-sg.tiktok.com",
+  "toblog.ctobsnssdk.com",
   "telemetry.microsoft.com",
   "v10.events.data.microsoft.com",
   "watson.telemetry.microsoft.com",
   "samsungads.com",
-  "ads.tiktok.com",
   "ads-twitter.com",
   "bingads.microsoft.com",
 
