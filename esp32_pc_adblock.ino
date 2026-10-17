@@ -4,12 +4,22 @@
 #include <ESPmDNS.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
+#include "esp_partition.h"
+#include <lwip/lwip_napt.h>
+#include <lwip/tcpip.h>
 
 // ==========================================
 // Network & Hardware Configuration
 // ==========================================
+// Upstream Wi-Fi Router (STA Mode)
 const char* WIFI_SSID     = "NM45_2.4GHz";
 const char* WIFI_PASSWORD = "M9NMjkMD";
+
+// AdBlock Wi-Fi Access Point (AP Mode + NAT Router)
+const char* AP_SSID       = "AdBlock_WiFi";
+const char* AP_PASSWORD   = "adblock123";  // Simple WPA2 key for all devices
+const IPAddress AP_IP(192, 168, 4, 1);
+const IPAddress AP_NETMASK(255, 255, 255, 0);
 
 // Local Machine (Host PC) Target Information
 const char* TARGET_PC_IP  = "192.168.0.50";
@@ -39,6 +49,12 @@ const unsigned long PC_PING_INTERVAL = 4000;
 unsigned long totalQueries = 0;
 unsigned long blockedQueries = 0;
 
+// Memory-Mapped Flash Blocklist Table
+static esp_partition_mmap_handle_t mmapHandle = 0;
+static const uint8_t* mmapPtr = nullptr;
+static uint32_t flashDomainCount = 0;
+static bool flashBlocklistLoaded = false;
+
 // Query Log Entry
 struct QueryLog {
   char domain[64];
@@ -47,7 +63,7 @@ struct QueryLog {
   uint32_t timestamp;
 };
 
-const int MAX_LOGS = 25;
+const int MAX_LOGS = 30;
 QueryLog queryLogs[MAX_LOGS];
 int logIndex = 0;
 int totalLogsCount = 0;
@@ -69,794 +85,567 @@ void addQueryLog(const String& domain, const IPAddress& clientIp, bool blocked) 
 }
 
 // ==========================================
-// Built-in AdBlock Domain List
+// Built-in AdBlock Fallback Domain List
 // ==========================================
 const char* const BUILTIN_BLOCKLIST[] = {
-  // --- Google & Display Ad Networks ---
-  "doubleclick.net",
-  "googleads.g.doubleclick.net",
-  "pagead2.googlesyndication.com",
-  "googlesyndication.com",
-  "googleadservices.com",
-  "adservice.google.com",
-  "google-analytics.com",
-  "googletagmanager.com",
-  "admob.com",
-  "2mdn.net",
+  // Google / Display Ads
+  "doubleclick.net", "googleads.g.doubleclick.net", "pagead2.googlesyndication.com",
+  "googlesyndication.com", "googleadservices.com", "adservice.google.com",
+  "google-analytics.com", "googletagmanager.com", "admob.com", "2mdn.net",
 
-  // --- Video Pre-Roll & In-Stream Ads (YouTube, Twitch, VAST) ---
-  "imasdk.googleapis.com",
-  "s.youtube.com",
-  "video-ad-stats.googlevideo.com",
-  "innovid.com",
-  "spotxchange.com",
-  "spotx.tv",
-  "tremorhub.com",
-  "springserve.com",
-  "brightroll.com",
-  "flashtalking.com",
-  "serving-sys.com",
-  "connatix.com",
-  "aniview.com",
-  "vi-serve.com",
-  "anyclip.com",
-  "primis.tech",
-  "vidazoo.com",
-  "playwire.com",
+  // Video Pre-Rolls & In-Stream Ads
+  "imasdk.googleapis.com", "s.youtube.com", "video-ad-stats.googlevideo.com",
+  "innovid.com", "spotxchange.com", "spotx.tv", "tremorhub.com", "springserve.com",
+  "brightroll.com", "flashtalking.com", "serving-sys.com", "connatix.com", "aniview.com",
 
-  // --- Pop-Ups, Pop-Unders & Native Clickbait ---
-  "popads.net",
-  "popcash.net",
-  "propellerads.com",
-  "adcash.com",
-  "onclickads.net",
-  "monetag.com",
-  "trafficjunky.com",
-  "exoclick.com",
-  "juicyads.com",
-  "clickadu.com",
-  "hilltopads.com",
-  "evadav.com",
-  "richads.com",
-  "rollerads.com",
-  "zergnet.com",
-  "revcontent.com",
-  "mgid.com",
-  "taboola.com",
-  "outbrain.com",
-  "adblade.com",
-  "content.ad",
-  "disqusads.com",
+  // Mobile Reel & In-App Video Ad SDKs (TikTok, Unity, AppLovin, Mintegral, IronSource)
+  "ads.tiktok.com", "analytics.tiktok.com", "business-api.tiktok.com", "log.tiktokv.com",
+  "ib.tiktokv.com", "mon.tiktokv.com", "ad.oceanengine.com", "pglstatp-toutiao.com",
+  "pangle.io", "pangolin-sdk-toutiao.com", "ads.unity3d.com", "auction.unityads.unity3d.com",
+  "webview.unityads.unity3d.com", "a.applovin.com", "ms.applovin.com", "d.applovin.com",
+  "rt.applovin.com", "net.mintegral.com", "pgl.mintegral.com", "init.supersonicads.com",
+  "outcome.ironsrc.com", "ads.api.vungle.com", "config.vungle.com", "config.inmobi.com",
+  "ads.inmobi.com", "live.chartboost.com", "da.chartboost.com", "ads.liftoff.io",
+  "engine.fyber.com", "events3alt.adcolony.com", "ads.adcolony.com",
 
-  // --- Major Ad Exchanges & SSP/DSP Networks ---
-  "adnxs.com",
-  "criteo.com",
-  "criteo.net",
-  "rubiconproject.com",
-  "scorecardresearch.com",
-  "amazon-adsystem.com",
-  "media.net",
-  "pubmatic.com",
-  "openx.net",
-  "adroll.com",
-  "smartadserver.com",
-  "bidswitch.net",
-  "casalemedia.com",
-  "yieldmo.com",
-  "advertising.com",
-  "sharethrough.com",
-  "indexexchange.com",
-  "triplelift.com",
-  "gumgum.com",
-  "teads.tv",
-  "unruly.co",
-  "sovrn.com",
-  "lijit.com",
+  // Popups, Overlays & Anti-Adblock
+  "popads.net", "popcash.net", "propellerads.com", "adcash.com", "exoclick.com",
+  "juicyads.com", "ero-advertising.com", "trafficjunky.com", "clickadu.com",
+  "admaven.com", "adsterra.com", "hilltopads.com", "zergnet.com", "revcontent.com",
+  "adblock-analytics.com", "blockadblock.com", "detectadblock.com", "getadmiral.com",
+  "admiral.com", "ad-score.com", "adblocker-detector.com",
 
-  // --- Mobile & In-Game Ad SDKs (Reel Apps & In-App Ads) ---
-  "unityads.unity3d.com",
-  "applovin.com",
-  "vungle.com",
-  "ironsrc.mobi",
-  "adcolony.com",
-  "chartboost.com",
-  "flurry.com",
-  "inmobi.com",
-  "mintegral.com",
-  "pangle.io",
-  "pangolin-sdk.com",
-  "tapjoy.com",
-  "ogury.com",
-  "appodeal.com",
-  "supersonicads.com",
-  "smaato.net",
-  "fyber.com",
+  // Paywalls & Membership Interceptors
+  "tinypass.com", "piano.io", "api.tinypass.com", "experience.tinypass.com",
+  "qiota.com", "evolok.net", "poool.fr",
 
-  // --- Anti-AdBlock Detection & View-Blockers ---
-  "fundingchoicesmessages.google.com",
-  "admiral.com",
-  "getadmiral.com",
-  "blockadblock.com",
-  "detectadblock.com",
-  "pagefair.com",
-  "adblockanalytics.com",
-  "sp-prod.net",
-  "quantcast.mgr.consensu.org",
-  "cmp.uniconsent.com",
-  "usercentrics.eu",
-  "cookiebot.com",
-  "onetrust.com",
-  "didomi.io",
-
-  // --- Invisible Trackers, Social Telemetry & Fingerprinters ---
-  "hotjar.com",
-  "mouseflow.com",
-  "crazyegg.com",
-  "fullstory.com",
-  "logrocket.io",
-  "heapanalytics.com",
-  "mixpanel.com",
-  "segment.io",
-  "segment.com",
-  "branch.io",
-  "appsflyer.com",
-  "adjust.com",
-  "quantserve.com",
-  "moatads.com",
-  "chartbeat.net",
-  "newrelic.com",
-  "fpjs.io",
-  "fingerprintjs.com",
-  "amplitude.com",
-  "pixel.facebook.com",
-  "an.facebook.com",
-  "analytics.facebook.com",
-  "b-graph.facebook.com",
-  "connect.facebook.net",
-  "alb.reddit.com",
-  "events.reddit.com",
-  "events.redditmedia.com",
-  "out.reddit.com",
-  "ads.tiktok.com",
-  "analytics.tiktok.com",
-  "mcs-sg.tiktokv.com",
-  "mon-sg.tiktokv.com",
-  "mon.tiktokv.com",
-  "mssdk-sg.tiktok.com",
-  "toblog.ctobsnssdk.com",
-  "telemetry.microsoft.com",
-  "v10.events.data.microsoft.com",
-  "watson.telemetry.microsoft.com",
-  "samsungads.com",
-  "ads-twitter.com",
-  "bingads.microsoft.com",
-
-  // --- Paywalls, Gating & Membership Requirement Domains ---
-  "tinypass.com",
-  "piano.io",
-  "evolok.net",
-  "zephr.com",
-  "poool.fr",
-  "meter.com",
-  "qiota.com",
-  "cxense.com",
-  "blueconic.net",
-  "mparticle.com",
-  "onesignal.com",
-  "subscribewithgoogle.com",
-  "pelcro.com",
-  "laterpay.net",
-  "leakypaywall.com",
-  "leaky-paywall.com",
-  "instartlogic.com",
-  "adrecover.com"
+  // Trackers & Telemetry
+  "criteo.com", "criteo.net", "taboola.com", "outbrain.com", "adnxs.com",
+  "rubiconproject.com", "pubmatic.com", "openx.net", "casalemedia.com",
+  "scorecardresearch.com", "hotjar.com", "fullstory.com", "mouseflow.com",
+  "crazyegg.com", "onesignal.com", "braze.com", "branch.io", "adjust.com",
+  "appsflyer.com", "singular.net", "kochava.com"
 };
-const size_t BUILTIN_COUNT = sizeof(BUILTIN_BLOCKLIST) / sizeof(BUILTIN_BLOCKLIST[0]);
+const size_t BUILTIN_BLOCKLIST_COUNT = sizeof(BUILTIN_BLOCKLIST) / sizeof(BUILTIN_BLOCKLIST[0]);
 
-// Dynamic Custom Blocklist (up to 32 additional domains saved to NVS)
-const int MAX_CUSTOM_DOMAINS = 32;
-String customBlocklist[MAX_CUSTOM_DOMAINS];
-int customCount = 0;
-
-void loadCustomBlocklist() {
-  prefs.begin("adblock", true);
-  customCount = prefs.getInt("count", 0);
-  if (customCount > MAX_CUSTOM_DOMAINS) customCount = MAX_CUSTOM_DOMAINS;
-  for (int i = 0; i < customCount; i++) {
-    String key = "d" + String(i);
-    customBlocklist[i] = prefs.getString(key.c_str(), "");
+// FNV-1a 64-bit hash function (case-insensitive)
+static inline uint64_t hashDomain(const char* str, size_t len) {
+  uint64_t h = 14695981039346656037ULL;
+  for (size_t i = 0; i < len; i++) {
+    char c = str[i];
+    if (c >= 'A' && c <= 'Z') c += ('a' - 'A');
+    h ^= (uint64_t)(unsigned char)c;
+    h *= 1099511628211ULL;
   }
-  adblockEnabled = prefs.getBool("enabled", true);
-  prefs.end();
+  return h;
 }
 
-void saveCustomBlocklist() {
-  prefs.begin("adblock", false);
-  prefs.putInt("count", customCount);
-  for (int i = 0; i < customCount; i++) {
-    String key = "d" + String(i);
-    prefs.putString(key.c_str(), customBlocklist[i]);
+// Binary search on memory-mapped flash table
+static bool binarySearchFlash(uint64_t hash) {
+  if (!flashBlocklistLoaded || mmapPtr == nullptr || flashDomainCount == 0) return false;
+  
+  const uint64_t* table = (const uint64_t*)(mmapPtr + 12);
+  int left = 0;
+  int right = (int)flashDomainCount - 1;
+  
+  while (left <= right) {
+    int mid = left + (right - left) / 2;
+    uint64_t midVal = table[mid];
+    if (midVal == hash) return true;
+    if (midVal < hash) left = mid + 1;
+    else right = mid - 1;
   }
-  prefs.putBool("enabled", adblockEnabled);
-  prefs.end();
+  return false;
 }
 
-bool isDomainBlocked(const String& domain) {
-  if (!adblockEnabled || domain.length() == 0) return false;
+// Initialize memory-mapped flash blocklist partition
+void initFlashBlocklist() {
+  const esp_partition_t* part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
+  if (!part) {
+    part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "spiffs");
+  }
+  
+  if (part) {
+    Serial.printf("[BLOCKLIST] Found partition '%s' at 0x%06x, size %u bytes\n", part->label, part->address, part->size);
+    esp_err_t err = esp_partition_mmap(part, 0, part->size, ESP_PARTITION_MMAP_DATA, (const void**)&mmapPtr, &mmapHandle);
+    if (err == ESP_OK && mmapPtr != nullptr) {
+      uint32_t magic = *(const uint32_t*)mmapPtr;
+      uint32_t version = *((const uint32_t*)mmapPtr + 1);
+      uint32_t count = *((const uint32_t*)mmapPtr + 2);
+      
+      if (magic == 0x424C4B4C) { // "BLKL"
+        flashDomainCount = count;
+        flashBlocklistLoaded = true;
+        Serial.printf("[BLOCKLIST] Flash blocklist verified! Loaded %u domains (v%u)\n", count, version);
+        return;
+      } else {
+        Serial.printf("[BLOCKLIST] Partition magic mismatch: 0x%08x (expected 0x424C4B4C)\n", magic);
+      }
+    } else {
+      Serial.printf("[BLOCKLIST] Failed to mmap partition: 0x%x\n", err);
+    }
+  } else {
+    Serial.println("[BLOCKLIST] SPIFFS partition not found!");
+  }
+  flashBlocklistLoaded = false;
+  flashDomainCount = 0;
+}
 
-  // 1. Check built-in blocklist (exact match or subdomain)
-  for (size_t i = 0; i < BUILTIN_COUNT; i++) {
-    const char* blocked = BUILTIN_BLOCKLIST[i];
-    if (domain == blocked || domain.endsWith("." + String(blocked))) {
+bool isDomainBlocked(const String& rawDomain) {
+  if (!adblockEnabled) return false;
+  
+  String dom = rawDomain;
+  dom.trim();
+  dom.toLowerCase();
+  
+  // Whitelist core infrastructure
+  if (dom == "router" || dom.endsWith(".local") || dom.endsWith(".lan") || dom == "esp32.local") {
+    return false;
+  }
+  
+  // Check exact domain in Flash table
+  uint64_t fullHash = hashDomain(dom.c_str(), dom.length());
+  if (binarySearchFlash(fullHash)) return true;
+  
+  // Suffix/Subdomain matching in Flash table (e.g., "ad.doubleclick.net" -> "doubleclick.net")
+  const char* str = dom.c_str();
+  const char* p = str;
+  while ((p = strchr(p, '.')) != NULL) {
+    p++; // skip '.'
+    if (strchr(p, '.') != NULL) { // ensure not matching TLD alone
+      uint64_t subHash = hashDomain(p, strlen(p));
+      if (binarySearchFlash(subHash)) return true;
+    }
+  }
+  
+  // Check Builtin list fallback
+  for (size_t i = 0; i < BUILTIN_BLOCKLIST_COUNT; i++) {
+    const char* bDom = BUILTIN_BLOCKLIST[i];
+    if (dom == bDom || dom.endsWith(String(".") + bDom)) {
       return true;
     }
   }
-
-  // 2. Check custom user blocklist
-  for (int i = 0; i < customCount; i++) {
-    if (customBlocklist[i].length() > 0) {
-      if (domain == customBlocklist[i] || domain.endsWith("." + customBlocklist[i])) {
-        return true;
-      }
-    }
-  }
-
-  // 3. Heuristic ad, video, popup, view-blocker & paywall keywords
-  if (domain.indexOf("googleadservices") >= 0 ||
-      domain.indexOf("doubleclick") >= 0 ||
-      domain.indexOf("googlesyndication") >= 0 ||
-      domain.indexOf("adservice") >= 0 ||
-      domain.indexOf("adsystem") >= 0 ||
-      domain.indexOf("adserver") >= 0 ||
-      domain.indexOf("addelivery") >= 0 ||
-      domain.indexOf("popunder") >= 0 ||
-      domain.indexOf("popads") >= 0 ||
-      domain.indexOf("popcash") >= 0 ||
-      domain.indexOf("propellerad") >= 0 ||
-      domain.indexOf("monetag") >= 0 ||
-      domain.indexOf("connatix") >= 0 ||
-      domain.indexOf("aniview") >= 0 ||
-      domain.indexOf("imasdk") >= 0 ||
-      domain.indexOf("tinypass") >= 0 ||
-      domain.indexOf("piano.io") >= 0 ||
-      domain.indexOf("evolok") >= 0 ||
-      domain.indexOf("zephr") >= 0 ||
-      domain.indexOf("poool") >= 0 ||
-      domain.indexOf("qiota") >= 0 ||
-      domain.indexOf("pelcro") >= 0 ||
-      domain.indexOf("getadmiral") >= 0 ||
-      domain.indexOf("blockadblock") >= 0 ||
-      domain.indexOf("detectadblock") >= 0 ||
-      domain.indexOf("pagefair") >= 0 ||
-      domain.startsWith("ads.") ||
-      domain.indexOf(".ads.") >= 0 ||
-      domain.startsWith("telemetry.") ||
-      domain.indexOf(".telemetry.") >= 0) {
-    return true;
-  }
-
+  
   return false;
 }
 
 // ==========================================
-// Function 1: PC Power Control Logic
+// DNS Protocol Engine (UDP 53)
 // ==========================================
-void sendWakeOnLan() {
-  Serial.println("[WoL] Generating Wake-on-LAN Magic Packet for Host PC...");
-  uint8_t packet[102];
-  memset(packet, 0xFF, 6);
-  for (int i = 0; i < 16; i++) {
-    memcpy(packet + 6 + i * 6, TARGET_PC_MAC, 6);
-  }
+struct DNSHeader {
+  uint16_t id;
+  uint16_t flags;
+  uint16_t qdcount;
+  uint16_t ancount;
+  uint16_t nscount;
+  uint16_t arcount;
+};
 
-  WiFiUDP udp;
-  // Send to subnet broadcast on port 9
-  udp.beginPacket(BROADCAST_IP, 9);
-  udp.write(packet, sizeof(packet));
-  udp.endPacket();
-
-  // Send to subnet broadcast on port 7
-  udp.beginPacket(BROADCAST_IP, 7);
-  udp.write(packet, sizeof(packet));
-  udp.endPacket();
-
-  // Send to global broadcast 255.255.255.255
-  udp.beginPacket(GLOBAL_BROADCAST, 9);
-  udp.write(packet, sizeof(packet));
-  udp.endPacket();
-
-  Serial.println("[WoL] Magic Packet sent successfully!");
-}
-
-bool sendPowerOff() {
-  Serial.println("[PowerOff] Sending shutdown command to Host PC daemon...");
-  HTTPClient http;
-  String url = "http://" + String(TARGET_PC_IP) + ":" + String(TARGET_PC_PWR_PORT) + "/api/poweroff";
-  http.begin(url);
-  http.setTimeout(2500);
-  int httpCode = http.POST("{}");
-  http.end();
-  Serial.printf("[PowerOff] Host response code: %d\n", httpCode);
-  return (httpCode == 200 || httpCode == 204);
-}
-
-void checkHostPcStatus() {
-  WiFiClient client;
-  client.setTimeout(1);
-  if (client.connect(TARGET_PC_IP, TARGET_PC_PWR_PORT)) {
-    hostPcOnline = true;
-    client.stop();
-  } else {
-    // Check fallback port (SSH port 22)
-    if (client.connect(TARGET_PC_IP, 22)) {
-      hostPcOnline = true;
-      client.stop();
-    } else {
-      hostPcOnline = false;
-    }
-  }
-}
-
-// ==========================================
-// Function 2: DNS Sinkhole Implementation
-// ==========================================
-uint8_t dnsQueryBuf[1024];
-uint8_t dnsRespBuf[1024];
-
-String parseDnsDomain(uint8_t* buf, int len, int* qtypeOffset) {
+String parseDNSQueryName(const uint8_t* buffer, size_t length, size_t& offset, uint16_t& qtype, uint16_t& qclass) {
   String domain = "";
-  int ptr = 12; // Start of Question Section
-  while (ptr < len && buf[ptr] != 0) {
-    int labelLen = buf[ptr++];
-    if (labelLen > 63 || ptr + labelLen > len) return "";
-    for (int i = 0; i < labelLen; i++) {
-      domain += (char)buf[ptr++];
+  offset = 12; // DNS header size
+  
+  while (offset < length) {
+    uint8_t len = buffer[offset++];
+    if (len == 0) break;
+    
+    if ((len & 0xC0) == 0xC0) {
+      offset++; // Compressed pointer
+      break;
     }
-    if (ptr < len && buf[ptr] != 0) domain += ".";
+    
+    if (offset + len > length) return "";
+    
+    if (domain.length() > 0) domain += ".";
+    for (uint8_t i = 0; i < len; i++) {
+      domain += (char)buffer[offset++];
+    }
   }
-  if (ptr < len && buf[ptr] == 0) ptr++;
-  if (qtypeOffset) *qtypeOffset = ptr;
-  domain.toLowerCase();
+  
+  if (offset + 4 <= length) {
+    qtype = (buffer[offset] << 8) | buffer[offset + 1];
+    qclass = (buffer[offset + 2] << 8) | buffer[offset + 3];
+    offset += 4;
+  }
+  
   return domain;
 }
 
-void handleDnsPacket() {
+size_t makeSinkholeResponse(const uint8_t* queryBuf, size_t queryLen, size_t qnameEndOffset, uint16_t qtype, uint8_t* respBuf, size_t maxRespLen) {
+  if (queryLen + 16 > maxRespLen) return 0;
+  
+  memcpy(respBuf, queryBuf, queryLen);
+  DNSHeader* hdr = (DNSHeader*)respBuf;
+  hdr->flags = htons(0x8180); // Standard response, No error
+  hdr->ancount = htons(1);
+  hdr->nscount = 0;
+  hdr->arcount = 0;
+  
+  size_t offset = queryLen;
+  
+  // Compression pointer to domain name in Question
+  respBuf[offset++] = 0xC0;
+  respBuf[offset++] = 0x0C;
+  
+  // Type
+  respBuf[offset++] = (qtype >> 8) & 0xFF;
+  respBuf[offset++] = qtype & 0xFF;
+  
+  // Class IN
+  respBuf[offset++] = 0x00;
+  respBuf[offset++] = 0x01;
+  
+  // TTL = 60s
+  respBuf[offset++] = 0x00;
+  respBuf[offset++] = 0x00;
+  respBuf[offset++] = 0x00;
+  respBuf[offset++] = 0x3C;
+  
+  if (qtype == 0x001C) {
+    // Type AAAA (IPv6): return :: (16 zero bytes)
+    respBuf[offset++] = 0x00;
+    respBuf[offset++] = 0x10;
+    memset(&respBuf[offset], 0x00, 16);
+    offset += 16;
+  } else {
+    // Type A (IPv4): return 0.0.0.0
+    respBuf[offset++] = 0x00;
+    respBuf[offset++] = 0x04;
+    respBuf[offset++] = 0x00;
+    respBuf[offset++] = 0x00;
+    respBuf[offset++] = 0x00;
+    respBuf[offset++] = 0x00;
+  }
+  
+  return offset;
+}
+
+void forwardDNSQuery(const uint8_t* queryBuf, size_t queryLen, const IPAddress& clientIp, uint16_t clientPort) {
+  WiFiUDP upstreamUdp;
+  upstreamUdp.begin(0);
+  
+  upstreamUdp.beginPacket(UPSTREAM_DNS_PRIMARY, 53);
+  upstreamUdp.write(queryBuf, queryLen);
+  if (!upstreamUdp.endPacket()) {
+    upstreamUdp.beginPacket(UPSTREAM_DNS_SECONDARY, 53);
+    upstreamUdp.write(queryBuf, queryLen);
+    upstreamUdp.endPacket();
+  }
+  
+  unsigned long startWait = millis();
+  bool gotReply = false;
+  uint8_t forwardBuf[512];
+  
+  while (millis() - startWait < 1500) {
+    int replySize = upstreamUdp.parsePacket();
+    if (replySize > 0) {
+      if (replySize > sizeof(forwardBuf)) replySize = sizeof(forwardBuf);
+      upstreamUdp.read(forwardBuf, replySize);
+      
+      dnsServer.beginPacket(clientIp, clientPort);
+      dnsServer.write(forwardBuf, replySize);
+      dnsServer.endPacket();
+      
+      gotReply = true;
+      break;
+    }
+    delay(2);
+  }
+  
+  upstreamUdp.stop();
+}
+
+void processDNSQueries() {
   int packetSize = dnsServer.parsePacket();
-  if (packetSize < 12 || packetSize > (int)sizeof(dnsQueryBuf)) return;
-
-  IPAddress clientIP = dnsServer.remoteIP();
+  if (packetSize <= 0) return;
+  
+  uint8_t buffer[512];
+  if (packetSize > sizeof(buffer)) packetSize = sizeof(buffer);
+  
+  dnsServer.read(buffer, packetSize);
+  IPAddress clientIp = dnsServer.remoteIP();
   uint16_t clientPort = dnsServer.remotePort();
-  dnsServer.read(dnsQueryBuf, sizeof(dnsQueryBuf));
-
-  totalQueries++;
-
-  int qtypeOffset = 0;
-  String domain = parseDnsDomain(dnsQueryBuf, packetSize, &qtypeOffset);
-
+  
+  if (packetSize < 12) return;
+  
+  size_t qnameEndOffset = 0;
+  uint16_t qtype = 1, qclass = 1;
+  String domain = parseDNSQueryName(buffer, packetSize, qnameEndOffset, qtype, qclass);
+  
   if (domain.length() == 0) return;
-
+  
+  totalQueries++;
   bool blocked = isDomainBlocked(domain);
+  
   if (blocked) {
     blockedQueries++;
-    addQueryLog(domain, clientIP, true);
-    Serial.printf("[DNS BLOCKED] %s from %s\n", domain.c_str(), clientIP.toString().c_str());
-
-    // Read Query Type (A, AAAA, HTTPS, etc.)
-    uint16_t qtype = 1;
-    if (qtypeOffset > 0 && (qtypeOffset + 2) <= packetSize) {
-      qtype = (dnsQueryBuf[qtypeOffset] << 8) | dnsQueryBuf[qtypeOffset + 1];
+    uint8_t respBuf[512];
+    size_t respLen = makeSinkholeResponse(buffer, packetSize, qnameEndOffset, qtype, respBuf, sizeof(respBuf));
+    if (respLen > 0) {
+      dnsServer.beginPacket(clientIp, clientPort);
+      dnsServer.write(respBuf, respLen);
+      dnsServer.endPacket();
     }
-
-    // Build RFC-compliant DNS response
-    memcpy(dnsRespBuf, dnsQueryBuf, packetSize);
-    dnsRespBuf[2] = 0x81; // Response, recursion desired
-    dnsRespBuf[3] = 0x80; // Recursion available, no error
-    dnsRespBuf[8] = 0x00; // NSCOUNT = 0
-    dnsRespBuf[9] = 0x00;
-    dnsRespBuf[10] = 0x00; // ARCOUNT = 0
-    dnsRespBuf[11] = 0x00;
-
-    int idx = (qtypeOffset > 0) ? (qtypeOffset + 4) : packetSize;
-
-    if (qtype == 28) {
-      // Type AAAA (IPv6) -> return :: (16 bytes 0x00)
-      dnsRespBuf[6] = 0x00; dnsRespBuf[7] = 0x01; // ANCOUNT = 1
-      if (idx + 28 < (int)sizeof(dnsRespBuf)) {
-        dnsRespBuf[idx++] = 0xC0; dnsRespBuf[idx++] = 0x0C; // Name pointer
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x1C; // Type AAAA
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x01; // Class IN
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00;
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x3C; // TTL = 60s
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x10; // RDLength = 16
-        memset(&dnsRespBuf[idx], 0, 16);                    // ::
-        idx += 16;
-      }
-    } else if (qtype == 1) {
-      // Type A (IPv4) -> return 0.0.0.0 (4 bytes 0x00)
-      dnsRespBuf[6] = 0x00; dnsRespBuf[7] = 0x01; // ANCOUNT = 1
-      if (idx + 16 < (int)sizeof(dnsRespBuf)) {
-        dnsRespBuf[idx++] = 0xC0; dnsRespBuf[idx++] = 0x0C; // Name pointer
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x01; // Type A
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x01; // Class IN
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00;
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x3C; // TTL = 60s
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x04; // RDLength = 4
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00; // 0.0.0.0
-        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00;
-      }
-    } else {
-      // Other types (e.g. HTTPS Type 65) -> return NOERROR NODATA
-      dnsRespBuf[6] = 0x00; dnsRespBuf[7] = 0x00; // ANCOUNT = 0
-    }
-
-    dnsServer.beginPacket(clientIP, clientPort);
-    dnsServer.write(dnsRespBuf, idx);
-    dnsServer.endPacket();
+    addQueryLog(domain, clientIp, true);
   } else {
-    addQueryLog(domain, clientIP, false);
-    // Forward query to upstream DNS resolver
-    WiFiUDP forwarder;
-    forwarder.begin(0);
-    forwarder.beginPacket(UPSTREAM_DNS_PRIMARY, 53);
-    forwarder.write(dnsQueryBuf, packetSize);
-    forwarder.endPacket();
-
-    unsigned long start = millis();
-    bool answered = false;
-    while (millis() - start < 350) {
-      int respLen = forwarder.parsePacket();
-      if (respLen > 0 && respLen <= (int)sizeof(dnsRespBuf)) {
-        forwarder.read(dnsRespBuf, sizeof(dnsRespBuf));
-        dnsServer.beginPacket(clientIP, clientPort);
-        dnsServer.write(dnsRespBuf, respLen);
-        dnsServer.endPacket();
-        answered = true;
-        break;
-      }
-      delayMicroseconds(500);
-    }
-
-    if (!answered) {
-      // Fallback to secondary upstream resolver
-      forwarder.beginPacket(UPSTREAM_DNS_SECONDARY, 53);
-      forwarder.write(dnsQueryBuf, packetSize);
-      forwarder.endPacket();
-      start = millis();
-      while (millis() - start < 350) {
-        int respLen = forwarder.parsePacket();
-        if (respLen > 0 && respLen <= (int)sizeof(dnsRespBuf)) {
-          forwarder.read(dnsRespBuf, sizeof(dnsRespBuf));
-          dnsServer.beginPacket(clientIP, clientPort);
-          dnsServer.write(dnsRespBuf, respLen);
-          dnsServer.endPacket();
-          break;
-        }
-        delayMicroseconds(500);
-      }
-    }
-    forwarder.stop();
+    forwardDNSQuery(buffer, packetSize, clientIp, clientPort);
+    addQueryLog(domain, clientIp, false);
   }
 }
 
 // ==========================================
-// Web Server Frontend & API Endpoints
+// PC Power Control Engine (WoL + Host Daemon)
 // ==========================================
-const char HTML_INDEX[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ESP32 DevKit V4 // Power Hub & DNS Sinkhole</title>
-<style>
-:root{--bg:#080c14;--card:#0f172a;--border:#1e293b;--cyan:#00e5ff;--green:#10b981;--red:#ef4444;--text:#f8fafc;--muted:#94a3b8;}
-*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,monospace;}
-body{background:var(--bg);color:var(--text);padding:20px;line-height:1.5;}
-.container{max-width:1080px;margin:0 auto;}
-header{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;background:var(--card);border:1px solid var(--border);border-radius:12px;margin-bottom:20px;}
-.logo{font-size:1.25rem;font-weight:700;color:var(--cyan);letter-spacing:1px;}
-.badge{padding:4px 12px;border-radius:20px;font-size:0.75rem;font-weight:700;text-transform:uppercase;}
-.badge-online{background:rgba(16,185,129,0.15);color:var(--green);border:1px solid var(--green);}
-.badge-offline{background:rgba(239,68,68,0.15);color:var(--red);border:1px solid var(--red);}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-bottom:20px;}
-.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;}
-.card h2{font-size:1rem;color:var(--cyan);margin-bottom:14px;display:flex;align-items:center;gap:8px;}
-.stat-val{font-size:2rem;font-weight:800;color:var(--text);margin-bottom:4px;}
-.stat-sub{font-size:0.8rem;color:var(--muted);}
-.btn{background:var(--cyan);color:#080c14;border:none;padding:12px 20px;border-radius:8px;font-weight:700;cursor:pointer;transition:0.2s;width:100%;font-size:0.95rem;margin-top:10px;}
-.btn:hover{filter:brightness(1.15);}
-.btn-red{background:var(--red);color:#fff;}
-.btn-red:hover{filter:brightness(1.15);}
-.btn-group{display:flex;gap:12px;}
-.toggle-wrapper{display:flex;align-items:center;justify-content:space-between;padding:12px;background:rgba(255,255,255,0.03);border-radius:8px;}
-.switch{position:relative;display:inline-block;width:48px;height:24px;}
-.switch input{opacity:0;width:0;height:0;}
-.slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#334155;transition:.3s;border-radius:24px;}
-.slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background-color:white;transition:.3s;border-radius:50%;}
-input:checked + .slider{background-color:var(--cyan);}
-input:checked + .slider:before{transform:translateX(24px);}
-table{width:100%;border-collapse:collapse;font-size:0.82rem;}
-th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);}
-th{color:var(--muted);font-weight:600;}
-.status-tag{padding:2px 8px;border-radius:4px;font-weight:700;font-size:0.7rem;}
-.status-blocked{background:rgba(239,68,68,0.2);color:var(--red);}
-.status-allowed{background:rgba(16,185,129,0.2);color:var(--green);}
-input[type="text"]{background:#080c14;border:1px solid var(--border);color:#fff;padding:8px 12px;border-radius:6px;width:70%;font-family:inherit;}
-.custom-form{display:flex;gap:8px;margin-top:12px;}
-.custom-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
-.tag{background:#1e293b;color:#cbd5e1;padding:4px 8px;border-radius:4px;font-size:0.75rem;display:flex;align-items:center;gap:6px;}
-.tag span{cursor:pointer;color:var(--red);font-weight:bold;}
-.guide{background:rgba(0,229,255,0.03);border:1px solid rgba(0,229,255,0.2);padding:14px;border-radius:8px;font-size:0.85rem;color:#cbd5e1;margin-top:16px;}
-</style>
-</head>
-<body>
-<div class="container">
-  <header>
-    <div>
-      <div class="logo">⚡ ESP32 DEVKIT V4</div>
-      <div style="font-size:0.8rem;color:var(--muted);">PC Power Control & DNS Sinkhole AdBlocker</div>
-    </div>
-    <div id="pcBadge" class="badge badge-offline">Host PC: Checking...</div>
-  </header>
-
-  <div class="grid">
-    <!-- Function 1: Host Power Control -->
-    <div class="card">
-      <h2>⚡ Local Machine Power Hub</h2>
-      <div style="font-size:0.85rem;color:var(--muted);margin-bottom:10px;">
-        Target PC: <b>192.168.0.50</b> (MAC: <code>30:9c:23:9a:b5:fa</code>)
-      </div>
-      <div class="btn-group">
-        <button class="btn" onclick="sendPower('on')">⚡ Power On (WoL)</button>
-        <button class="btn btn-red" onclick="sendPower('off')">🛑 Power Off (Shutdown)</button>
-      </div>
-      <div id="pwrMsg" style="margin-top:10px;font-size:0.8rem;color:var(--cyan);height:20px;"></div>
-    </div>
-
-    <!-- Function 2: AdBlock Statistics -->
-    <div class="card">
-      <h2>🛡️ DNS Sinkhole Metrics</h2>
-      <div style="display:flex;justify-content:space-between;text-align:center;">
-        <div>
-          <div class="stat-val" id="statBlocked" style="color:var(--red);">0</div>
-          <div class="stat-sub">Ads Blocked</div>
-        </div>
-        <div>
-          <div class="stat-val" id="statTotal">0</div>
-          <div class="stat-sub">Total Queries</div>
-        </div>
-        <div>
-          <div class="stat-val" id="statRate" style="color:var(--cyan);">0%</div>
-          <div class="stat-sub">Block Rate</div>
-        </div>
-      </div>
-      <div class="toggle-wrapper" style="margin-top:16px;">
-        <span>Master AdBlocker Toggle</span>
-        <label class="switch">
-          <input type="checkbox" id="adblockToggle" onchange="toggleAdblock(this.checked)">
-          <span class="slider"></span>
-        </label>
-      </div>
-    </div>
-  </div>
-
-  <!-- Custom Domain Blocklist Card -->
-  <div class="card" style="margin-bottom:20px;">
-    <h2>🚫 Custom Blocklist Manager</h2>
-    <div style="font-size:0.85rem;color:var(--muted);">
-      Total active rules: <b id="ruleCount" style="color:var(--cyan);">0</b> (Built-in + Custom domains)
-    </div>
-    <div class="custom-form">
-      <input type="text" id="domainInput" placeholder="e.g. tracking-network.com">
-      <button class="btn" style="margin-top:0;width:auto;" onclick="addCustomDomain()">Add Domain</button>
-    </div>
-    <div class="custom-tags" id="customTags"></div>
-  </div>
-
-  <!-- Live DNS Stream Table -->
-  <div class="card">
-    <h2>📜 Real-Time Network DNS Queries</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Client IP</th>
-          <th>Requested Domain</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody id="logTableBody">
-        <tr><td colspan="4" style="text-align:center;color:var(--muted);">Listening for DNS traffic on port 53...</td></tr>
-      </tbody>
-    </table>
-
-    <div class="guide">
-      <b>💡 How to activate Network-wide AdBlocking:</b><br>
-      Point your router's primary DNS or your device's DNS settings to this ESP32's IP address (<code id="espIp">...</code>). All ad queries, banners, trackers, and telemetry will automatically be sinkholed to <code>0.0.0.0</code>!
-    </div>
-  </div>
-</div>
-
-<script>
-async function updateStatus() {
-  try {
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    document.getElementById('statBlocked').innerText = data.blocked;
-    document.getElementById('statTotal').innerText = data.total;
-    const rate = data.total > 0 ? ((data.blocked / data.total) * 100).toFixed(1) : 0;
-    document.getElementById('statRate').innerText = rate + '%';
-    document.getElementById('ruleCount').innerText = data.builtin_rules + data.custom.length;
-    document.getElementById('adblockToggle').checked = data.enabled;
-    document.getElementById('espIp').innerText = data.esp_ip;
-
-    const badge = document.getElementById('pcBadge');
-    if (data.pc_online) {
-      badge.className = 'badge badge-online';
-      badge.innerText = 'Host PC: ONLINE';
-    } else {
-      badge.className = 'badge badge-offline';
-      badge.innerText = 'Host PC: OFFLINE';
-    }
-
-    // Render custom tags
-    const tagsDiv = document.getElementById('customTags');
-    tagsDiv.innerHTML = data.custom.map(d => 
-      `<div class="tag">${d} <span onclick="removeCustomDomain('${d}')">&times;</span></div>`
-    ).join('');
-
-  } catch(e) {}
-}
-
-async function updateLogs() {
-  try {
-    const res = await fetch('/api/logs');
-    const logs = await res.json();
-    const tbody = document.getElementById('logTableBody');
-    if (logs.length === 0) return;
-    tbody.innerHTML = logs.map(l => `
-      <tr>
-        <td>${l.time}s</td>
-        <td>${l.ip}</td>
-        <td><b>${l.domain}</b></td>
-        <td><span class="status-tag ${l.blocked ? 'status-blocked' : 'status-allowed'}">${l.blocked ? 'BLOCKED' : 'RESOLVED'}</span></td>
-      </tr>
-    `).join('');
-  } catch(e) {}
-}
-
-async function sendPower(action) {
-  const pwrMsg = document.getElementById('pwrMsg');
-  pwrMsg.innerText = action === 'on' ? 'Sending Wake-on-LAN packet...' : 'Sending shutdown command...';
-  try {
-    const res = await fetch('/api/power/' + action, {method: 'POST'});
-    const data = await res.json();
-    pwrMsg.innerText = data.message;
-    setTimeout(() => { pwrMsg.innerText = ''; }, 4000);
-    setTimeout(updateStatus, 1500);
-  } catch(e) {
-    pwrMsg.innerText = 'Error sending power command';
+void sendWakeOnLan() {
+  uint8_t magicPacket[102];
+  memset(magicPacket, 0xFF, 6);
+  for (int i = 1; i <= 16; i++) {
+    memcpy(&magicPacket[i * 6], TARGET_PC_MAC, 6);
   }
+
+  WiFiUDP wolUdp;
+  wolUdp.begin(0);
+  wolUdp.beginPacket(BROADCAST_IP, 9);
+  wolUdp.write(magicPacket, sizeof(magicPacket));
+  wolUdp.endPacket();
+
+  wolUdp.beginPacket(GLOBAL_BROADCAST, 9);
+  wolUdp.write(magicPacket, sizeof(magicPacket));
+  wolUdp.endPacket();
+  
+  wolUdp.beginPacket(BROADCAST_IP, 7);
+  wolUdp.write(magicPacket, sizeof(magicPacket));
+  wolUdp.endPacket();
+  wolUdp.stop();
+  
+  Serial.println("[WOL] Magic packet broadcasted to 30:9C:23:9A:B5:FA");
 }
 
-async function toggleAdblock(enabled) {
-  await fetch('/api/adblock/toggle?state=' + (enabled ? '1' : '0'), {method: 'POST'});
-  updateStatus();
+bool checkHostPcStatus() {
+  HTTPClient http;
+  String url = String("http://") + TARGET_PC_IP + ":" + TARGET_PC_PWR_PORT + "/api/status";
+  http.begin(url);
+  http.setTimeout(800);
+  int httpCode = http.GET();
+  bool online = (httpCode == 200);
+  http.end();
+  return online;
 }
 
-async function addCustomDomain() {
-  const input = document.getElementById('domainInput');
-  const domain = input.value.trim().toLowerCase();
-  if (!domain) return;
-  await fetch('/api/adblock/add?domain=' + encodeURIComponent(domain), {method: 'POST'});
-  input.value = '';
-  updateStatus();
+bool sendPowerOffSignal() {
+  HTTPClient http;
+  String url = String("http://") + TARGET_PC_IP + ":" + TARGET_PC_PWR_PORT + "/api/poweroff";
+  http.begin(url);
+  http.setTimeout(1500);
+  http.addHeader("Content-Type", "application/json");
+  int httpCode = http.POST("{\"action\":\"shutdown\",\"delay\":3}");
+  bool success = (httpCode == 200 || httpCode == 202);
+  http.end();
+  return success;
 }
 
-async function removeCustomDomain(domain) {
-  await fetch('/api/adblock/remove?domain=' + encodeURIComponent(domain), {method: 'POST'});
-  updateStatus();
-}
+// ==========================================
+// Web Dashboard & REST API
+// ==========================================
+String buildDashboardHtml() {
+  int totalDomains = flashBlocklistLoaded ? flashDomainCount : BUILTIN_BLOCKLIST_COUNT;
+  float blockRate = totalQueries > 0 ? ((float)blockedQueries / totalQueries * 100.0) : 0.0;
+  int apStations = WiFi.softAPgetStationNum();
 
-setInterval(updateStatus, 2500);
-setInterval(updateLogs, 2500);
-updateStatus();
-updateLogs();
-</script>
-</body>
-</html>
-)rawliteral";
+  String html = F("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+  "<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+  "<title>ESP32 AdBlock & PC Control</title>"
+  "<style>"
+  ":root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#c9d1d9;--accent:#58a6ff;--success:#238636;--danger:#da3633;--warning:#d29922;--purple:#bc8cff}"
+  "*{box-sizing:border-box;margin:0;padding:0}"
+  "body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);padding:16px;max-width:960px;margin:0 auto;line-height:1.5}"
+  ".header{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;background:var(--card);border:1px solid var(--border);border-radius:12px;margin-bottom:16px}"
+  ".header h1{font-size:1.3rem;display:flex;align-items:center;gap:10px;color:#fff}"
+  ".badge{padding:4px 10px;border-radius:20px;font-size:0.75rem;font-weight:600;text-transform:uppercase}"
+  ".badge-online{background:#1b4729;color:#3fb950;border:1px solid #238636}"
+  ".badge-offline{background:#481f24;color:#f85149;border:1px solid #da3633}"
+  ".badge-accent{background:#1f334d;color:var(--accent);border:1px solid var(--accent)}"
+  ".badge-purple{background:#38224d;color:var(--purple);border:1px solid var(--purple)}"
+  ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}"
+  ".card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px}"
+  ".card-title{font-size:0.8rem;text-transform:uppercase;color:#8b949e;margin-bottom:6px}"
+  ".card-value{font-size:1.6rem;font-weight:700;color:#fff}"
+  ".wifi-banner{background:linear-gradient(135deg,#1f334d,#161b22);border:1px solid var(--accent);border-radius:12px;padding:16px;margin-bottom:16px}"
+  ".wifi-banner h2{font-size:1.1rem;color:var(--accent);margin-bottom:8px}"
+  ".btn-group{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}"
+  ".btn{padding:10px 18px;border-radius:8px;font-size:0.9rem;font-weight:600;cursor:pointer;border:none;transition:opacity 0.2s;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}"
+  ".btn:hover{opacity:0.85}"
+  ".btn-primary{background:var(--success);color:#fff}"
+  ".btn-danger{background:var(--danger);color:#fff}"
+  ".btn-accent{background:var(--accent);color:#0d1117}"
+  ".btn-secondary{background:#21262d;color:var(--text);border:1px solid var(--border)}"
+  "table{width:100%;border-collapse:collapse;margin-top:10px;font-size:0.85rem}"
+  "th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}"
+  "th{color:#8b949e;background:#10141a}"
+  ".blocked{color:#f85149;font-weight:600}"
+  ".allowed{color:#3fb950}"
+  "input[type=text]{width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:#0d1117;color:#fff;margin-bottom:8px}"
+  "</style></head><body>");
 
-void handleRoot() {
-  server.send_P(200, "text/html", HTML_INDEX);
-}
+  // Header
+  html += F("<div class='header'><div><h1>🛡️ ESP32 AdBlock & Power Master</h1>"
+  "<small style='color:#8b949e'>Dual AP+STA Router • Zero-Config Protection</small></div>"
+  "<div><span class='badge ");
+  html += hostPcOnline ? F("badge-online'>PC Online</span>") : F("badge-offline'>PC Offline</span>");
+  html += F("</div></div>");
 
-void handleStatusApi() {
-  String json = "{";
-  json += "\"status\":\"ok\",";
-  json += "\"esp_ip\":\"" + WiFi.localIP().toString() + "\",";
-  json += "\"pc_online\":" + String(hostPcOnline ? "true" : "false") + ",";
-  json += "\"enabled\":" + String(adblockEnabled ? "true" : "false") + ",";
-  json += "\"total\":" + String(totalQueries) + ",";
-  json += "\"blocked\":" + String(blockedQueries) + ",";
-  json += "\"builtin_rules\":" + String(BUILTIN_COUNT) + ",";
-  json += "\"custom\":[";
-  for (int i = 0; i < customCount; i++) {
-    json += "\"" + customBlocklist[i] + "\"";
-    if (i < customCount - 1) json += ",";
-  }
-  json += "]}";
-  server.send(200, "application/json", json);
-}
+  // Wi-Fi Access Point Banner
+  html += F("<div class='wifi-banner'><h2>📶 AdBlock Wi-Fi Network Active (Zero-Config)</h2>"
+  "<p style='font-size:0.9rem;margin-bottom:6px'>Connect any phone, tablet, TV, or laptop directly to this Wi-Fi. <b>All ads and popups are blocked instantly with zero configuration!</b></p>"
+  "<div style='display:flex;gap:16px;flex-wrap:wrap;font-size:0.95rem;margin-top:8px'>"
+  "<div>SSID: <b style='color:#fff'>");
+  html += AP_SSID;
+  html += F("</b></div><div>Password: <b style='color:#fff'>");
+  html += AP_PASSWORD;
+  html += F("</b></div><div>Gateway / DNS: <b style='color:#fff'>");
+  html += AP_IP.toString();
+  html += F("</b></div><div>Connected Clients: <b style='color:#3fb950'>");
+  html += String(apStations);
+  html += F("</b></div></div></div>");
 
-void handleLogsApi() {
-  String json = "[";
-  for (int i = 0; i < totalLogsCount; i++) {
-    // Read newest first
-    int idx = (logIndex - 1 - i + MAX_LOGS) % MAX_LOGS;
+  // Statistics Grid
+  html += F("<div class='grid'><div class='card'><div class='card-title'>Blocked Domains</div>"
+  "<div class='card-value' style='color:var(--accent)'>");
+  html += String(totalDomains);
+  html += F("</div><small style='color:#8b949e'>");
+  html += flashBlocklistLoaded ? F("Flash Partition Mapped (Hagezi+Video)") : F("Core Embedded");
+  html += F("</small></div>"
+  "<div class='card'><div class='card-title'>DNS Queries Total</div><div class='card-value'>");
+  html += String(totalQueries);
+  html += F("</div><small style='color:#8b949e'>Port 53 UDP</small></div>"
+  "<div class='card'><div class='card-title'>Ads & Popups Blocked</div><div class='card-value' style='color:#f85149'>");
+  html += String(blockedQueries);
+  html += F("</div><small style='color:#8b949e'>Sinkhole 0.0.0.0 / ::</small></div>"
+  "<div class='card'><div class='card-title'>Block Ratio</div><div class='card-value' style='color:#3fb950'>");
+  html += String(blockRate, 1);
+  html += F("%</div><small style='color:#8b949e'>Network wide</small></div></div>");
+
+  // PC Power Controls & AdBlock Toggle
+  html += F("<div class='grid' style='grid-template-columns:1fr 1fr;'><div class='card'><div class='card-title'>Target Host PC Control (192.168.0.50)</div>"
+  "<p style='font-size:0.85rem;color:#8b949e;margin-bottom:8px'>Hardware WoL broadcast & secure HTTP poweroff daemon.</p>"
+  "<div class='btn-group'><a href='/api/pc/wake' class='btn btn-primary'>⚡ Power On (WoL)</a>"
+  "<a href='/api/pc/off' class='btn btn-danger' onclick=\"return confirm('Confirm shutdown of host PC?')\">🛑 Power Off</a></div></div>"
+  "<div class='card'><div class='card-title'>AdBlock Sinkhole Engine</div>"
+  "<p style='font-size:0.85rem;color:#8b949e;margin-bottom:8px'>Status: <b style='color:");
+  html += adblockEnabled ? F("#3fb950'>Active</b>") : F("#f85149'>Bypassed</b>");
+  html += F("</p><div class='btn-group'><a href='/api/adblock/toggle' class='btn btn-secondary'>");
+  html += adblockEnabled ? F("Disable AdBlock") : F("Enable AdBlock");
+  html += F("</a><a href='/api/blocklist/status' class='btn btn-secondary'>Status JSON</a></div></div></div>");
+
+  // Domain Test Tool Card
+  html += F("<div class='card' style='margin-bottom:16px'><div class='card-title'>🔍 Test Domain Lookup</div>"
+  "<form action='/test' method='GET' style='margin-top:8px'>"
+  "<input type='text' name='q' placeholder='e.g. doubleclick.net or ads.tiktok.com' required>"
+  "<button type='submit' class='btn btn-accent'>Check Domain</button></form></div>");
+
+  // Recent DNS Queries Log
+  html += F("<div class='card'><div class='card-title'>Live DNS Queries (Last ");
+  html += String(totalLogsCount);
+  html += F(")</div><div style='overflow-x:auto'><table><thead><tr><th>Domain</th><th>Client IP</th><th>Action</th><th>Time</th></tr></thead><tbody>");
+
+  int count = 0;
+  int idx = (logIndex - 1 + MAX_LOGS) % MAX_LOGS;
+  while (count < totalLogsCount) {
     QueryLog& entry = queryLogs[idx];
-    json += "{";
-    json += "\"domain\":\"" + String(entry.domain) + "\",";
-    json += "\"ip\":\"" + String(entry.clientIp) + "\",";
-    json += "\"blocked\":" + String(entry.blocked ? "true" : "false") + ",";
-    json += "\"time\":" + String(entry.timestamp);
+    html += F("<tr><td><code>");
+    html += String(entry.domain);
+    html += F("</code></td><td>");
+    html += String(entry.clientIp);
+    html += F("</td><td>");
+    if (entry.blocked) {
+      html += F("<span class='blocked'>🚫 Blocked (0.0.0.0)</span>");
+    } else {
+      html += F("<span class='allowed'>✓ Allowed</span>");
+    }
+    html += F("</td><td><small>");
+    html += String(entry.timestamp);
+    html += F("s</small></td></tr>");
+
+    idx = (idx - 1 + MAX_LOGS) % MAX_LOGS;
+    count++;
+  }
+  if (totalLogsCount == 0) {
+    html += F("<tr><td colspan='4' style='text-align:center;color:#8b949e'>No queries recorded yet.</td></tr>");
+  }
+
+  html += F("</tbody></table></div></div>"
+  "<p style='text-align:center;margin-top:20px;font-size:0.8rem;color:#8b949e'>ESP32 DevKit V4 • Dual Wi-Fi NAPT Router • Nexus Swarm 2026</p>"
+  "</body></html>");
+
+  return html;
+}
+
+void setupWebRoutes() {
+  server.on("/", HTTP_GET, []() {
+    server.send(200, "text/html", buildDashboardHtml());
+  });
+
+  server.on("/test", HTTP_GET, []() {
+    if (!server.hasArg("q")) {
+      server.sendHeader("Location", "/");
+      server.send(303);
+      return;
+    }
+    String q = server.arg("q");
+    bool blocked = isDomainBlocked(q);
+    String res = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+                 "<title>Lookup Result</title><style>body{background:#0d1117;color:#c9d1d9;font-family:sans-serif;padding:30px;max-width:600px;margin:0 auto;text-align:center}"
+                 ".card{background:#161b22;padding:25px;border-radius:12px;border:1px solid #30363d;margin-top:20px}"
+                 ".btn{display:inline-block;padding:10px 20px;background:#58a6ff;color:#0d1117;text-decoration:none;border-radius:6px;font-weight:bold;margin-top:15px}"
+                 "</style></head><body><h2>Domain Lookup Result</h2><div class='card'>";
+    res += "<p style='font-size:1.2rem'>Domain: <code>" + q + "</code></p><p style='margin:15px 0;font-size:1.5rem;font-weight:bold;color:" + (blocked ? "#f85149'>🚫 SINKHOLED (BLOCKED)" : "#3fb950'>✓ RESOLVED (ALLOWED)") + "</p>";
+    res += "<a href='/' class='btn'>Back to Dashboard</a></div></body></html>";
+    server.send(200, "text/html", res);
+  });
+
+  server.on("/api/status", HTTP_GET, []() {
+    String json = "{";
+    json += "\"host_pc_online\":" + String(hostPcOnline ? "true" : "false") + ",";
+    json += "\"adblock_enabled\":" + String(adblockEnabled ? "true" : "false") + ",";
+    json += "\"total_domains\":" + String(flashBlocklistLoaded ? flashDomainCount : BUILTIN_BLOCKLIST_COUNT) + ",";
+    json += "\"flash_mapped\":" + String(flashBlocklistLoaded ? "true" : "false") + ",";
+    json += "\"total_queries\":" + String(totalQueries) + ",";
+    json += "\"blocked_queries\":" + String(blockedQueries) + ",";
+    json += "\"ap_stations\":" + String(WiFi.softAPgetStationNum()) + ",";
+    json += "\"ap_ip\":\"" + AP_IP.toString() + "\",";
+    json += "\"sta_ip\":\"" + WiFi.localIP().toString() + "\",";
+    json += "\"free_heap\":" + String(ESP.getFreeHeap());
     json += "}";
-    if (i < totalLogsCount - 1) json += ",";
-  }
-  json += "]";
-  server.send(200, "application/json", json);
-}
+    server.send(200, "application/json", json);
+  });
 
-void handlePowerOn() {
-  sendWakeOnLan();
-  server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Wake-on-LAN magic packet broadcasted!\"}");
-}
+  server.on("/api/blocklist/status", HTTP_GET, []() {
+    String json = "{";
+    json += "\"total_domains\":" + String(flashBlocklistLoaded ? flashDomainCount : BUILTIN_BLOCKLIST_COUNT) + ",";
+    json += "\"source\":\"" + String(flashBlocklistLoaded ? "Flash Partition 0x290000 (HaGeZi+Video/Reel/Popup)" : "PROGMEM Builtin") + "\",";
+    json += "\"blocked_count\":" + String(blockedQueries) + ",";
+    json += "\"allowed_count\":" + String(totalQueries - blockedQueries);
+    json += "}";
+    server.send(200, "application/json", json);
+  });
 
-void handlePowerOff() {
-  bool ok = sendPowerOff();
-  if (ok) {
-    server.send(200, "application/json", "{\"status\":\"ok\",\"message\":\"Shutdown signal sent to host PC!\"}");
-  } else {
-    server.send(200, "application/json", "{\"status\":\"sent\",\"message\":\"Shutdown packet dispatched to host 192.168.0.50\"}");
-  }
-}
+  server.on("/api/adblock/toggle", HTTP_GET, []() {
+    adblockEnabled = !adblockEnabled;
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
 
-void handleAdblockToggle() {
-  if (server.hasArg("state")) {
-    adblockEnabled = (server.arg("state") == "1");
-    saveCustomBlocklist();
-  }
-  server.send(200, "application/json", "{\"status\":\"ok\",\"enabled\":" + String(adblockEnabled ? "true" : "false") + "}");
-}
+  server.on("/api/pc/wake", HTTP_GET, []() {
+    sendWakeOnLan();
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
 
-void handleAdblockAdd() {
-  if (server.hasArg("domain") && customCount < MAX_CUSTOM_DOMAINS) {
-    String d = server.arg("domain");
-    d.trim();
-    d.toLowerCase();
-    if (d.length() > 0) {
-      customBlocklist[customCount++] = d;
-      saveCustomBlocklist();
-    }
-  }
-  server.send(200, "application/json", "{\"status\":\"ok\"}");
-}
-
-void handleAdblockRemove() {
-  if (server.hasArg("domain")) {
-    String d = server.arg("domain");
-    for (int i = 0; i < customCount; i++) {
-      if (customBlocklist[i] == d) {
-        for (int j = i; j < customCount - 1; j++) {
-          customBlocklist[j] = customBlocklist[j+1];
-        }
-        customCount--;
-        saveCustomBlocklist();
-        break;
-      }
-    }
-  }
-  server.send(200, "application/json", "{\"status\":\"ok\"}");
+  server.on("/api/pc/off", HTTP_GET, []() {
+    sendPowerOffSignal();
+    server.sendHeader("Location", "/");
+    server.send(303);
+  });
 }
 
 // ==========================================
@@ -864,71 +653,81 @@ void handleAdblockRemove() {
 // ==========================================
 void setup() {
   Serial.begin(115200);
-  delay(500);
-  Serial.println("\n\n=============================================");
-  Serial.println("  ESP32 DevKit V4: PC Power & DNS AdBlocker  ");
-  Serial.println("=============================================");
+  delay(100);
+  Serial.println("\n\n========================================");
+  Serial.println("  ESP32 AdBlock Router & Power Master");
+  Serial.println("  Dual AP+STA • Zero-Config DNS Sinkhole");
+  Serial.println("========================================");
 
-  loadCustomBlocklist();
+  // 1. Initialize Memory-Mapped Flash Blocklist Table
+  initFlashBlocklist();
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  WiFi.setAutoReconnect(true);
+  // 2. Configure Wi-Fi Dual Mode: AP + STA
+  WiFi.mode(WIFI_AP_STA);
 
-  Serial.printf("[WiFi] Connecting to %s ...\n", WIFI_SSID);
+  // Configure SoftAP
+  WiFi.softAPConfig(AP_IP, AP_IP, AP_NETMASK);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  Serial.printf("[WIFI AP] SoftAP started: SSID='%s', Pass='%s', IP=%s\n", AP_SSID, AP_PASSWORD, AP_IP.toString().c_str());
+
+  // Configure Station
+  IPAddress local_IP(192, 168, 0, 201);
+  IPAddress gateway(192, 168, 0, 1);
+  IPAddress subnet(255, 255, 255, 0);
+  IPAddress primaryDNS(192, 168, 0, 1);
+  WiFi.config(local_IP, gateway, subnet, primaryDNS, IPAddress(1, 1, 1, 1));
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  int retries = 0;
-  while (WiFi.status() != WL_CONNECTED && retries < 40) {
-    delay(300);
+  Serial.printf("[WIFI STA] Connecting to %s", WIFI_SSID);
+  unsigned long startWifi = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startWifi < 12000) {
+    delay(250);
     Serial.print(".");
-    retries++;
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n[WiFi] Connected successfully!");
-    Serial.print("[WiFi] IP Address: ");
-    Serial.println(WiFi.localIP());
+    Serial.printf("\n[WIFI STA] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
   } else {
-    Serial.println("\n[WiFi] Connection timeout, continuing in STA mode...");
+    Serial.println("\n[WIFI STA] Wi-Fi connection timed out, continuing in AP mode...");
   }
 
-  // Setup mDNS
+  // 3. Enable lwIP NAPT Router (translates SoftAP clients to Station uplink)
+  LOCK_TCPIP_CORE();
+  ip_napt_enable((u32_t)WiFi.softAPIP(), 1);
+  UNLOCK_TCPIP_CORE();
+  Serial.printf("[NAPT] Hardware lwIP NAT Router enabled on %s!\n", WiFi.softAPIP().toString().c_str());
+
+  // 4. Initialize DNS Server (UDP 53)
+  if (dnsServer.begin(DNS_PORT)) {
+    Serial.printf("[DNS] DNS Interceptor listening on UDP port %u\n", DNS_PORT);
+  } else {
+    Serial.println("[DNS] Failed to bind UDP port 53!");
+  }
+
+  // 5. Initialize mDNS
   if (MDNS.begin("esp32")) {
-    Serial.println("[mDNS] Responder started: http://esp32.local");
     MDNS.addService("http", "tcp", 80);
+    Serial.println("[mDNS] Responder active at http://esp32.local");
   }
 
-  // Web Server Routes
-  server.on("/", handleRoot);
-  server.on("/api/status", handleStatusApi);
-  server.on("/api/logs", handleLogsApi);
-  server.on("/api/power/on", HTTP_POST, handlePowerOn);
-  server.on("/api/power/off", HTTP_POST, handlePowerOff);
-  server.on("/api/adblock/toggle", HTTP_POST, handleAdblockToggle);
-  server.on("/api/adblock/add", HTTP_POST, handleAdblockAdd);
-  server.on("/api/adblock/remove", HTTP_POST, handleAdblockRemove);
-
-  // Enable CORS
-  server.enableCORS(true);
+  // 6. Start Web Dashboard
+  setupWebRoutes();
   server.begin();
-  Serial.println("[Web] HTTP Server active on port 80");
-
-  // DNS Server
-  dnsServer.begin(DNS_PORT);
-  Serial.println("[DNS] Sinkhole server active on UDP port 53");
+  Serial.println("[HTTP] Web dashboard online on port 80");
+  
+  hostPcOnline = checkHostPcStatus();
 }
 
 void loop() {
-  // Handle HTTP clients
+  // 1. Service DNS queries immediately
+  processDNSQueries();
+
+  // 2. Service HTTP server
   server.handleClient();
 
-  // Handle DNS queries
-  handleDnsPacket();
-
-  // Periodic Host PC Ping Check
+  // 3. Periodically check Host PC status
   if (millis() - lastPcPingCheck > PC_PING_INTERVAL) {
     lastPcPingCheck = millis();
-    checkHostPcStatus();
+    hostPcOnline = checkHostPcStatus();
   }
 }
