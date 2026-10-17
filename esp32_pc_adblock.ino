@@ -76,6 +76,8 @@ const char* const BUILTIN_BLOCKLIST[] = {
   "doubleclick.net",
   "googleads.g.doubleclick.net",
   "pagead2.googlesyndication.com",
+  "googlesyndication.com",
+  "googleadservices.com",
   "adservice.google.com",
   "google-analytics.com",
   "googletagmanager.com",
@@ -184,8 +186,16 @@ bool isDomainBlocked(const String& domain) {
   }
 
   // 3. Heuristic ad keywords in domain
-  if (domain.startsWith("adserver.") || domain.startsWith("ads.") || 
-      domain.startsWith("telemetry.") || domain.indexOf(".adserver.") > 0) {
+  if (domain.indexOf("googleadservices") >= 0 ||
+      domain.indexOf("doubleclick") >= 0 ||
+      domain.indexOf("googlesyndication") >= 0 ||
+      domain.indexOf("adservice") >= 0 ||
+      domain.indexOf("adsystem") >= 0 ||
+      domain.indexOf("adserver") >= 0 ||
+      domain.startsWith("ads.") ||
+      domain.indexOf(".ads.") >= 0 ||
+      domain.startsWith("telemetry.") ||
+      domain.indexOf(".telemetry.") >= 0) {
     return true;
   }
 
@@ -295,32 +305,57 @@ void handleDnsPacket() {
     addQueryLog(domain, clientIP, true);
     Serial.printf("[DNS BLOCKED] %s from %s\n", domain.c_str(), clientIP.toString().c_str());
 
-    // Build RFC 1035 DNS A response with 0.0.0.0
+    // Read Query Type (A, AAAA, HTTPS, etc.)
+    uint16_t qtype = 1;
+    if (qtypeOffset > 0 && (qtypeOffset + 2) <= packetSize) {
+      qtype = (dnsQueryBuf[qtypeOffset] << 8) | dnsQueryBuf[qtypeOffset + 1];
+    }
+
+    // Build RFC-compliant DNS response
     memcpy(dnsRespBuf, dnsQueryBuf, packetSize);
     dnsRespBuf[2] = 0x81; // Response, recursion desired
     dnsRespBuf[3] = 0x80; // Recursion available, no error
-    dnsRespBuf[6] = 0x00; // ANCOUNT = 1
-    dnsRespBuf[7] = 0x01;
     dnsRespBuf[8] = 0x00; // NSCOUNT = 0
     dnsRespBuf[9] = 0x00;
     dnsRespBuf[10] = 0x00; // ARCOUNT = 0
     dnsRespBuf[11] = 0x00;
 
     int idx = (qtypeOffset > 0) ? (qtypeOffset + 4) : packetSize;
-    if (idx + 16 < (int)sizeof(dnsRespBuf)) {
-      dnsRespBuf[idx++] = 0xC0; dnsRespBuf[idx++] = 0x0C; // Name pointer
-      dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x01; // Type A
-      dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x01; // Class IN
-      dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00;
-      dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x3C; // TTL = 60s
-      dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x04; // RDLength = 4
-      dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00; // 0.0.0.0
-      dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00;
 
-      dnsServer.beginPacket(clientIP, clientPort);
-      dnsServer.write(dnsRespBuf, idx);
-      dnsServer.endPacket();
+    if (qtype == 28) {
+      // Type AAAA (IPv6) -> return :: (16 bytes 0x00)
+      dnsRespBuf[6] = 0x00; dnsRespBuf[7] = 0x01; // ANCOUNT = 1
+      if (idx + 28 < (int)sizeof(dnsRespBuf)) {
+        dnsRespBuf[idx++] = 0xC0; dnsRespBuf[idx++] = 0x0C; // Name pointer
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x1C; // Type AAAA
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x01; // Class IN
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00;
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x3C; // TTL = 60s
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x10; // RDLength = 16
+        memset(&dnsRespBuf[idx], 0, 16);                    // ::
+        idx += 16;
+      }
+    } else if (qtype == 1) {
+      // Type A (IPv4) -> return 0.0.0.0 (4 bytes 0x00)
+      dnsRespBuf[6] = 0x00; dnsRespBuf[7] = 0x01; // ANCOUNT = 1
+      if (idx + 16 < (int)sizeof(dnsRespBuf)) {
+        dnsRespBuf[idx++] = 0xC0; dnsRespBuf[idx++] = 0x0C; // Name pointer
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x01; // Type A
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x01; // Class IN
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00;
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x3C; // TTL = 60s
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x04; // RDLength = 4
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00; // 0.0.0.0
+        dnsRespBuf[idx++] = 0x00; dnsRespBuf[idx++] = 0x00;
+      }
+    } else {
+      // Other types (e.g. HTTPS Type 65) -> return NOERROR NODATA
+      dnsRespBuf[6] = 0x00; dnsRespBuf[7] = 0x00; // ANCOUNT = 0
     }
+
+    dnsServer.beginPacket(clientIP, clientPort);
+    dnsServer.write(dnsRespBuf, idx);
+    dnsServer.endPacket();
   } else {
     addQueryLog(domain, clientIP, false);
     // Forward query to upstream DNS resolver
