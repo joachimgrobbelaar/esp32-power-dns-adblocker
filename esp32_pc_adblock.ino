@@ -72,7 +72,7 @@ void addQueryLog(const String& domain, const IPAddress& clientIp, bool blocked) 
 // Built-in AdBlock Domain List
 // ==========================================
 const char* const BUILTIN_BLOCKLIST[] = {
-  // Google / DoubleClick
+  // --- Google & Display Ad Networks ---
   "doubleclick.net",
   "googleads.g.doubleclick.net",
   "pagead2.googlesyndication.com",
@@ -81,42 +81,79 @@ const char* const BUILTIN_BLOCKLIST[] = {
   "adservice.google.com",
   "google-analytics.com",
   "googletagmanager.com",
-  
-  // Facebook / Meta
-  "pixel.facebook.com",
-  "an.facebook.com",
-  "analytics.facebook.com",
-  
-  // Microsoft & Windows Telemetry
-  "telemetry.microsoft.com",
-  "v10.events.data.microsoft.com",
-  "watson.telemetry.microsoft.com",
-  
-  // Major Ad Exchanges & Networks
-  "adnxs.com",
-  "criteo.com",
+  "admob.com",
+  "2mdn.net",
+
+  // --- Video Pre-Roll & In-Stream Ads (YouTube, Twitch, VAST) ---
+  "imasdk.googleapis.com",
+  "s.youtube.com",
+  "video-ad-stats.googlevideo.com",
+  "innovid.com",
+  "spotxchange.com",
+  "spotx.tv",
+  "tremorhub.com",
+  "springserve.com",
+  "brightroll.com",
+  "flashtalking.com",
+  "serving-sys.com",
+  "connatix.com",
+  "aniview.com",
+  "vi-serve.com",
+  "anyclip.com",
+  "primis.tech",
+  "vidazoo.com",
+  "playwire.com",
+
+  // --- Pop-Ups, Pop-Unders & Native Clickbait ---
+  "popads.net",
+  "popcash.net",
+  "propellerads.com",
+  "adcash.com",
+  "onclickads.net",
+  "monetag.com",
+  "trafficjunky.com",
+  "exoclick.com",
+  "juicyads.com",
+  "clickadu.com",
+  "hilltopads.com",
+  "evadav.com",
+  "richads.com",
+  "rollerads.com",
+  "zergnet.com",
+  "revcontent.com",
+  "mgid.com",
   "taboola.com",
   "outbrain.com",
+  "adblade.com",
+  "content.ad",
+  "disqusads.com",
+
+  // --- Major Ad Exchanges & SSP/DSP Networks ---
+  "adnxs.com",
+  "criteo.com",
+  "criteo.net",
   "rubiconproject.com",
   "scorecardresearch.com",
-  "popads.net",
   "amazon-adsystem.com",
   "media.net",
   "pubmatic.com",
   "openx.net",
   "adroll.com",
   "smartadserver.com",
-  "mgid.com",
-  "revcontent.com",
-  "zergnet.com",
   "bidswitch.net",
   "casalemedia.com",
   "yieldmo.com",
   "advertising.com",
-  "samsungads.com",
-  "ads.tiktok.com",
-  
-  // Mobile / Gaming Ads
+  "sharethrough.com",
+  "indexexchange.com",
+  "triplelift.com",
+  "gumgum.com",
+  "teads.tv",
+  "unruly.co",
+  "sovrn.com",
+  "lijit.com",
+
+  // --- Mobile & In-Game Ad SDKs ---
   "unityads.unity3d.com",
   "applovin.com",
   "vungle.com",
@@ -124,16 +161,78 @@ const char* const BUILTIN_BLOCKLIST[] = {
   "adcolony.com",
   "chartboost.com",
   "flurry.com",
-  
-  // Analytics & Trackers
+  "inmobi.com",
+  "mintegral.com",
+  "supersonicads.com",
+  "smaato.net",
+  "fyber.com",
+
+  // --- Anti-AdBlock Detection & View-Blockers ---
+  "fundingchoicesmessages.google.com",
+  "admiral.com",
+  "getadmiral.com",
+  "blockadblock.com",
+  "detectadblock.com",
+  "pagefair.com",
+  "adblockanalytics.com",
+  "sp-prod.net",
+  "quantcast.mgr.consensu.org",
+  "cmp.uniconsent.com",
+  "usercentrics.eu",
+  "cookiebot.com",
+  "onetrust.com",
+  "didomi.io",
+
+  // --- Invisible Trackers, Beacons, & Fingerprinters ---
   "hotjar.com",
-  "segment.io",
+  "mouseflow.com",
+  "crazyegg.com",
+  "fullstory.com",
+  "logrocket.io",
+  "heapanalytics.com",
   "mixpanel.com",
-  "adjust.com",
-  "appsflyer.com",
+  "segment.io",
+  "segment.com",
   "branch.io",
+  "appsflyer.com",
+  "adjust.com",
   "quantserve.com",
-  "moatads.com"
+  "moatads.com",
+  "chartbeat.net",
+  "newrelic.com",
+  "fpjs.io",
+  "fingerprintjs.com",
+  "amplitude.com",
+  "pixel.facebook.com",
+  "an.facebook.com",
+  "analytics.facebook.com",
+  "telemetry.microsoft.com",
+  "v10.events.data.microsoft.com",
+  "watson.telemetry.microsoft.com",
+  "samsungads.com",
+  "ads.tiktok.com",
+  "ads-twitter.com",
+  "bingads.microsoft.com",
+
+  // --- Paywalls, Gating & Membership Requirement Domains ---
+  "tinypass.com",
+  "piano.io",
+  "evolok.net",
+  "zephr.com",
+  "poool.fr",
+  "meter.com",
+  "qiota.com",
+  "cxense.com",
+  "blueconic.net",
+  "mparticle.com",
+  "onesignal.com",
+  "subscribewithgoogle.com",
+  "pelcro.com",
+  "laterpay.net",
+  "leakypaywall.com",
+  "leaky-paywall.com",
+  "instartlogic.com",
+  "adrecover.com"
 };
 const size_t BUILTIN_COUNT = sizeof(BUILTIN_BLOCKLIST) / sizeof(BUILTIN_BLOCKLIST[0]);
 
@@ -185,13 +284,33 @@ bool isDomainBlocked(const String& domain) {
     }
   }
 
-  // 3. Heuristic ad keywords in domain
+  // 3. Heuristic ad, video, popup, view-blocker & paywall keywords
   if (domain.indexOf("googleadservices") >= 0 ||
       domain.indexOf("doubleclick") >= 0 ||
       domain.indexOf("googlesyndication") >= 0 ||
       domain.indexOf("adservice") >= 0 ||
       domain.indexOf("adsystem") >= 0 ||
       domain.indexOf("adserver") >= 0 ||
+      domain.indexOf("addelivery") >= 0 ||
+      domain.indexOf("popunder") >= 0 ||
+      domain.indexOf("popads") >= 0 ||
+      domain.indexOf("popcash") >= 0 ||
+      domain.indexOf("propellerad") >= 0 ||
+      domain.indexOf("monetag") >= 0 ||
+      domain.indexOf("connatix") >= 0 ||
+      domain.indexOf("aniview") >= 0 ||
+      domain.indexOf("imasdk") >= 0 ||
+      domain.indexOf("tinypass") >= 0 ||
+      domain.indexOf("piano.io") >= 0 ||
+      domain.indexOf("evolok") >= 0 ||
+      domain.indexOf("zephr") >= 0 ||
+      domain.indexOf("poool") >= 0 ||
+      domain.indexOf("qiota") >= 0 ||
+      domain.indexOf("pelcro") >= 0 ||
+      domain.indexOf("getadmiral") >= 0 ||
+      domain.indexOf("blockadblock") >= 0 ||
+      domain.indexOf("detectadblock") >= 0 ||
+      domain.indexOf("pagefair") >= 0 ||
       domain.startsWith("ads.") ||
       domain.indexOf(".ads.") >= 0 ||
       domain.startsWith("telemetry.") ||
